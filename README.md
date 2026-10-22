@@ -4,8 +4,10 @@ TaskPilot is a task-management portfolio product with an ASP.NET Core Web API an
 
 ## Prerequisites
 
-- .NET SDK 10.0.401 (developed on macOS with Apple Silicon).
-- Git and curl for repository management and local verification.
+- Install the **.NET SDK**, not only the runtime, matching `global.json` (10.0.401 or a later 10.0.4xx patch). Choose Arm64 for Apple Silicon or the appropriate architecture for your computer. Use the official [macOS, Windows, and Linux installation instructions](https://learn.microsoft.com/en-us/dotnet/core/install/).
+- Install Git and curl. On Windows, use PowerShell and `curl.exe` explicitly to avoid the Windows PowerShell `curl` alias. The examples below distinguish PowerShell from bash/zsh syntax.
+- Access to NuGet is required to restore dependencies. SQLite is supplied by the existing EF Core provider; no database server, SQLite CLI, Docker, or mobile SDK is needed to run the API.
+- Verify installation with `dotnet --info`, `git --version`, and `curl --version` (`curl.exe --version` on Windows). Run repository commands from the repository root.
 
 `global.json` targets SDK 10.0.401, allows the latest patch in its feature band, and disables prerelease SDKs. The API targets `net10.0`.
 
@@ -15,7 +17,7 @@ TaskPilot is a task-management portfolio product with an ASP.NET Core Web API an
 taskpilot-api/
 ├── .github/workflows/ci.yml
 ├── .gitignore
-├── AGENTS.md
+├── AGENTS.md                     # Optional local-only instructions; ignored and untracked
 ├── dotnet-tools.json               # Repository-local EF CLI, pinned to 10.0.13
 ├── global.json
 ├── README.md
@@ -140,13 +142,9 @@ The initial migration was generated with this command (it is already committed; 
 dotnet ef migrations add InitialCreate --project src/TaskPilot.Api/TaskPilot.Api.csproj --startup-project src/TaskPilot.Api/TaskPilot.Api.csproj --output-dir Data/Migrations
 ```
 
-For future model changes, use a new descriptive migration name in that command. Review generated migrations before applying them. To explicitly apply the committed migrations to the local developer database from the repository root on macOS, use an absolute connection path so the CLI and application target the same file:
+For future model changes, use a new descriptive migration name in that command. Review generated migrations before applying them. Follow the cross-platform [local setup](#run-locally) below to apply the committed migration with the same explicit absolute database path used by the running API. Do not regenerate the initial migration.
 
-```sh
-dotnet ef database update --project src/TaskPilot.Api/TaskPilot.Api.csproj --startup-project src/TaskPilot.Api/TaskPilot.Api.csproj --connection "Data Source=$PWD/src/TaskPilot.Api/taskpilot.db"
-```
-
-This command applies migrations without deleting or resetting an existing database. Local database files and journal/WAL/SHM companions are ignored by Git; migration source files are versioned. Production SQLite requires persistent storage for its database files. Hosting and automated deployment are not configured.
+The database update command applies migrations without deleting or resetting an existing database. Local database files and journal/WAL/SHM companions are ignored by Git; migration source files are versioned. Production SQLite requires persistent storage for its database files. Hosting and automated deployment are not configured.
 
 ## Build, test, and publish
 
@@ -179,30 +177,173 @@ This is CI configuration, not evidence of a successful GitHub Actions run. Hosti
 
 ## Run locally
 
-After the Release build above, from the repository root:
+The following setup is for a human developer. Agents still follow the CI-first test policy; the explicitly requested manual HTTP smoke test does not run the automated test suite. Start with a loopback URL, and opt into LAN access only when you need a device connection.
+
+Restore dependencies and compile the API from the repository root:
 
 ```sh
-DOTNET_ENVIRONMENT=Development dotnet run --project src/TaskPilot.Api/TaskPilot.Api.csproj --configuration Release --no-build --no-launch-profile --urls http://localhost:5080
+dotnet tool restore
+dotnet restore TaskPilot.slnx
+dotnet build src/TaskPilot.Api/TaskPilot.Api.csproj --configuration Release --no-restore
 ```
 
-The explicit HTTP address is for local development only, not future production hosting configuration. Stop the API with Ctrl+C.
+Select a database and URL in the **same terminal** used to migrate and start the application. These paths are derived from your checkout, not hardcoded to a machine. The directory must exist and be writable. The environment variable overrides the relative connection string in `appsettings.json` for both EF tooling and the API.
 
-In another terminal:
+macOS/Linux (bash or zsh):
 
 ```sh
-curl -i http://localhost:5080/api/health
+export ConnectionStrings__TaskPilot="Data Source=$PWD/src/TaskPilot.Api/taskpilot.db"
+export DOTNET_ENVIRONMENT=Development
+export ASPNETCORE_URLS=http://127.0.0.1:5080
 ```
 
-Expected: HTTP 200 with `{"status":"ok"}`. This endpoint confirms the API responds; it does not check external dependencies.
+Windows (PowerShell):
 
-Built-in OpenAPI document generation is registered and exposed only in Development. With the command above, access the JSON document in a browser or with:
+```powershell
+$databasePath = Join-Path (Get-Location).Path 'src/TaskPilot.Api/taskpilot.db'
+$env:ConnectionStrings__TaskPilot = "Data Source=$databasePath"
+$env:DOTNET_ENVIRONMENT = 'Development'
+$env:ASPNETCORE_URLS = 'http://127.0.0.1:5080'
+```
+
+For a disposable smoke test, **replace the database setting above before migrating**. This avoids using or resetting the developer database:
 
 ```sh
-curl -i http://localhost:5080/openapi/v1.json
+# macOS/Linux
+mkdir -p artifacts
+smoke_directory=$(mktemp -d "$PWD/artifacts/manual-smoke.XXXXXX")
+export ConnectionStrings__TaskPilot="Data Source=$smoke_directory/tasks.db"
 ```
 
-No Swagger UI or other documentation UI is installed.
+```powershell
+# Windows PowerShell
+$smokeDirectory = Join-Path (Get-Location).Path ('artifacts/manual-smoke.' + [guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $smokeDirectory -Force | Out-Null
+$env:ConnectionStrings__TaskPilot = "Data Source=$(Join-Path $smokeDirectory 'tasks.db')"
+```
 
-## Prompt history
+Then run these commands in either shell. Stop if migration fails; startup does not apply migrations automatically.
 
-`AGENTS.md` contains project rules and the local prompt history convention. Full implementation prompts are stored in numbered files under Git-ignored `prompts/`; they are historical records, with secrets redacted. Keep `AGENTS.md` in version control and prompt history local.
+```sh
+dotnet ef database update --project src/TaskPilot.Api/TaskPilot.Api.csproj --startup-project src/TaskPilot.Api/TaskPilot.Api.csproj --configuration Release --no-build
+dotnet run --project src/TaskPilot.Api/TaskPilot.Api.csproj --configuration Release --no-build --no-launch-profile
+```
+
+The migration creates a new database when absent and applies pending migrations when it already exists. It does not reset the database. Check the startup log for `Now listening on: http://127.0.0.1:5080`. Choose another unused port by changing `ASPNETCORE_URLS`; alternatively append `--urls http://127.0.0.1:5081` to `dotnet run` to override the URL for that invocation. No URL or firewall settings are changed automatically.
+
+Stop the API with Ctrl+C. Environment variables remain in the current shell until cleared or the terminal is closed. After stopping, you may remove only the disposable directory you created (including any SQLite WAL/SHM files); never delete the normal developer database for a smoke test. The whole `artifacts/` directory is Git-ignored.
+
+## Manual HTTP smoke test
+
+Keep the API running and open a second terminal at the repository root. Use the same port as the startup log. `-i` prints response headers and bodies; inspect the HTTP status rather than curl's exit code, because curl normally exits successfully even for HTTP 400/404.
+
+macOS/Linux:
+
+```sh
+base_url=http://127.0.0.1:5080
+curl -i "$base_url/api/health"
+curl -i -X POST "$base_url/api/tasks" -H 'Content-Type: application/json' -d '{"title":"Smoke task","description":"Temporary data"}'
+# Copy the returned task ID. The Location header should point to its GET URL.
+task_id='REPLACE_WITH_RETURNED_ID'
+curl -i "$base_url/api/tasks"
+curl -i "$base_url/api/tasks/$task_id"
+curl -i -X PUT "$base_url/api/tasks/$task_id" -H 'Content-Type: application/json' -d '{"title":"Smoke complete","description":null,"isCompleted":true}'
+curl -i -X DELETE "$base_url/api/tasks/$task_id"
+curl -i "$base_url/api/tasks/$task_id"
+curl -i -X POST "$base_url/api/tasks" -H 'Content-Type: application/json' -d '{"title":""}'
+```
+
+Windows PowerShell uses request files to avoid differences in native-command JSON quoting between PowerShell versions:
+
+```powershell
+$baseUrl = 'http://127.0.0.1:5080'
+New-Item -ItemType Directory -Path artifacts -Force | Out-Null
+'{"title":"Smoke task","description":"Temporary data"}' | Set-Content -Encoding ascii artifacts/smoke-create.json
+'{"title":"Smoke complete","description":null,"isCompleted":true}' | Set-Content -Encoding ascii artifacts/smoke-update.json
+'{"title":""}' | Set-Content -Encoding ascii artifacts/smoke-invalid.json
+curl.exe -i "$baseUrl/api/health"
+curl.exe -i -X POST "$baseUrl/api/tasks" -H 'Content-Type: application/json' --data-binary '@artifacts/smoke-create.json'
+$taskId = 'REPLACE_WITH_RETURNED_ID'
+curl.exe -i "$baseUrl/api/tasks"
+curl.exe -i "$baseUrl/api/tasks/$taskId"
+curl.exe -i -X PUT "$baseUrl/api/tasks/$taskId" -H 'Content-Type: application/json' --data-binary '@artifacts/smoke-update.json'
+curl.exe -i -X DELETE "$baseUrl/api/tasks/$taskId"
+curl.exe -i "$baseUrl/api/tasks/$taskId"
+curl.exe -i -X POST "$baseUrl/api/tasks" -H 'Content-Type: application/json' --data-binary '@artifacts/smoke-invalid.json'
+```
+
+| Request | Expected manual check |
+| --- | --- |
+| Health | 200 and `{"status":"ok"}`; this does not check the database |
+| Create | 201, task JSON, nonempty generated ID, UTC creation time, `isCompleted: false`, and a matching `Location` URL |
+| List | 200 and an array containing the created task |
+| Get by ID | 200 and the same saved task |
+| Update | 200, changed title, null description, completed state, unchanged ID and creation time |
+| Delete | 204 and an empty body |
+| Get deleted task | 404 problem response |
+| Invalid create | 400 `application/problem+json` with a title validation error |
+
+Development also exposes `GET /openapi/v1.json`. Production does not. No Swagger UI is installed.
+
+Manual verification on macOS/Apple Silicon on 2026-10-22 used an isolated migrated SQLite database and a loopback listener. All seven task scenarios above returned their expected statuses (201, 200, 200, 200, 204, 404, 400); response fields, Location, and empty delete body were inspected. No automated tests were run locally. Windows/Linux startup and physical-device connectivity have not been exercised in this verification.
+
+## Optional local network access
+
+| Address | Meaning |
+| --- | --- |
+| `localhost` | The device making the request; Kestrel attempts IPv4 and IPv6 loopback binding |
+| `127.0.0.1` | IPv4 loopback on the current device; a phone using it reaches itself, not your computer |
+| Host LAN IPv4 address | The computer's address on the private Wi-Fi/Ethernet network; reachable by allowed peers |
+| `0.0.0.0` | A server binding to every IPv4 interface, not a client destination; avoid for this setup |
+
+Find the host's active private-network IPv4 address in macOS System Settings > Network, Windows `ipconfig`, or Linux `ip -4 addr`. Select the Wi-Fi/Ethernet interface shared with the phone, not a VPN, loopback, or public-facing interface. DHCP can change this address. Use a configurable debug base URL in mobile apps rather than committing a personal address.
+
+Stop the loopback instance. In the configured API terminal, replace the URL with your host's actual private LAN address. The address below is only an example:
+
+```sh
+# macOS/Linux; replace the example address before running.
+export ASPNETCORE_URLS=http://192.168.1.50:5080
+```
+
+```powershell
+# Windows PowerShell; replace the example address before running.
+$env:ASPNETCORE_URLS = 'http://192.168.1.50:5080'
+```
+
+Run the same `dotnet run ... --no-launch-profile` command above and confirm the listener in the log. Binding only to that address means loopback is no longer served by this instance; use the LAN URL for host-side requests too. Test `http://HOST_LAN_IP:5080/api/health` from the phone on the same trusted network. For explicit dual binding, Kestrel accepts semicolon-separated URLs, but do not use wildcards or public interfaces. [Kestrel endpoint configuration](https://learn.microsoft.com/en-us/aspnet/core/fundamentals/servers/kestrel/endpoints?view=aspnetcore-10.0)
+
+Keep firewalls enabled. If needed, manually allow only the API process/selected inbound TCP port from the test device or trusted subnet. On Windows restrict the rule to the Private network profile; on macOS review the application firewall and any Local Network privacy prompt; on Linux review the active firewall (for example ufw or firewalld). Do not add router port forwarding, internet tunnels, or broad inbound rules. Guest Wi-Fi/client isolation, VPN routing, corporate policies, and host sleep can prevent connectivity even on the same SSID. Running inside WSL adds a separate networking boundary; the Windows instructions assume a native Windows .NET process.
+
+Plain HTTP provides no encryption or server authentication. Anyone who can reach this unauthenticated API can read, modify, and delete tasks, and local network traffic may be observed or altered. Use disposable data on a trusted network, stop the listener after testing, and keep Development diagnostics off untrusted networks. HTTPS and authentication are required before use with sensitive data or external hosting; this task does not configure either or expose the API to the internet.
+
+### Android and iOS clients
+
+- **Physical Android and iOS devices:** use `http://HOST_LAN_IP:PORT` as the debug base URL, with the host bound to that private address and both devices on a reachable trusted network. Do not use `localhost` or `0.0.0.0` as the phone's server address.
+- **Android Emulator:** `http://10.0.2.2:PORT` is the standard emulator alias for the host's IPv4 loopback listener. This is distinct from physical-device LAN access. [Emulator networking](https://developer.android.com/studio/run/emulator-networking-address)
+- **Android app configuration:** declare the `INTERNET` permission. Apps targeting Android 9/API 28 or later default to blocking cleartext HTTP. If needed for this disposable setup, use a narrowly scoped network security configuration in the debug build only; do not disable transport protections in release builds. Check additional local-network permission requirements for the chosen Android OS/target SDK during client implementation. [Network security configuration](https://developer.android.com/privacy-and-security/security-config)
+- **iOS:** add `NSLocalNetworkUsageDescription` with a clear explanation and handle the user's Local Network permission decision. ATS transport policy is separate from that permission: configure only the debug local-network/IP exception needed for your deployment target, following Apple's current guidance, rather than globally disabling ATS. IP-address behavior differs across OS versions. [Local network privacy](https://developer.apple.com/documentation/technotes/tn3179-understanding-local-network-privacy) and [ATS local networking](https://developer.apple.com/documentation/bundleresources/information-property-list/nsapptransportsecurity/nsallowslocalnetworking)
+- **iOS Simulator on the API's Mac:** can use the Mac's loopback URL; a simulator on another machine needs the API host's LAN address. Simulator success does not verify physical-device permissions: Apple's simulator does not implement local-network privacy enforcement. [Simulator connectivity](https://learn.microsoft.com/en-us/dotnet/maui/data-cloud/local-web-services) and [Apple privacy guidance](https://developer.apple.com/documentation/technotes/tn3179-understanding-local-network-privacy)
+
+Native clients do not need browser CORS permissions. A future browser/WebView client may require a separately reviewed CORS policy. A development HTTPS certificate trusted on the host is not automatically trusted by a phone and may not cover its LAN address; proper certificates and device trust remain future setup work.
+
+## Troubleshooting and current limitations
+
+| Symptom | Check |
+| --- | --- |
+| SDK not found | Install the SDK architecture and feature band in `global.json`; reopen the terminal and inspect `dotnet --info` |
+| `dotnet ef` not found | Run `dotnet tool restore` from the repository root; check NuGet connectivity |
+| `--no-build` fails or old behavior runs | Build the API in Release after source changes; the command does not compile automatically |
+| SQLite `no such table: Tasks` | Apply migrations using the same `ConnectionStrings__TaskPilot` value as the API; relative paths can silently select a different database |
+| SQLite cannot open file / database locked | Check parent-directory permissions and other processes using that exact file; do not delete or reset a developer database |
+| Address already in use | Choose another port; do not terminate processes you did not start |
+| Connection refused or timeout | Check startup logs, scheme/port, host binding, firewall scope, VPN, Wi-Fi isolation, and whether the host is awake |
+| HTTP 400 or 415 | Inspect validation errors; send valid JSON with `Content-Type: application/json` |
+| Phone fails while host curl succeeds | Check the phone's base URL, LAN reachability, Android cleartext policy or iOS ATS/Local Network permission |
+| HTTPS/certificate error | These examples use HTTP; switching the scheme alone does not configure HTTPS or device trust |
+| OpenAPI returns 404 | Set `DOTNET_ENVIRONMENT=Development` before startup; only JSON documentation is available |
+
+The API currently has no authentication, user isolation, pagination, mobile clients, automatic migration startup, or production hosting/CD. Device connectivity, mobile permissions, and HTTPS trust still need validation during Android/iOS development. SQLite requires writable persistent storage for any eventual hosted deployment. This step verifies macOS loopback HTTP only and changes no API contracts, business logic, CI workflow, network binding defaults, or system security settings.
+
+## Local instructions and prompt history
+
+`AGENTS.md` remains local-only, Git-ignored, and untracked. Optional numbered files under ignored `prompts/` are local historical records, not active instructions. Neither private instructions nor prompt contents should be committed or published.
