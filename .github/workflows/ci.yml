@@ -51,3 +51,56 @@ jobs:
           name: taskpilot-api
           path: artifacts/publish/
           if-no-files-found: error
+
+  distribute:
+    name: Package and verify ${{ matrix.rid }}
+    needs: build-test-publish
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - rid: win-x64
+            runner: windows-2025
+          - rid: osx-arm64
+            runner: macos-15
+          - rid: osx-x64
+            runner: macos-15-intel
+          - rid: linux-x64
+            runner: ubuntu-24.04
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7.0.1
+
+      - name: Install .NET SDK
+        uses: actions/setup-dotnet@v6.0.0
+        with:
+          global-json-file: global.json
+
+      - name: Install Python for executable verification
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+
+      - name: Publish self-contained distribution (build verification)
+        run: dotnet publish src/TaskPilot.Api/TaskPilot.Api.csproj --configuration Release --runtime ${{ matrix.rid }} -p:PublishProfile=Distribution --output artifacts/package/${{ matrix.rid }}
+
+      - name: Archive, extract, and launch distribution (runtime verification)
+        run: python scripts/verify-distribution.py ${{ matrix.rid }}
+
+      - name: Upload verified distribution
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: taskpilot-api-${{ matrix.rid }}
+          path: artifacts/distributions/*
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload executable verification logs
+        if: always()
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: runtime-verification-${{ matrix.rid }}
+          path: artifacts/runtime-verification/${{ matrix.rid }}/*
+          if-no-files-found: ignore

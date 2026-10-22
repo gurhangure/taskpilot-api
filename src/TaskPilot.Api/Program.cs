@@ -2,7 +2,17 @@ using Microsoft.EntityFrameworkCore;
 using TaskPilot.Api.Data;
 using TaskPilot.Api.Services.Tasks;
 
+#if TASKPILOT_DISTRIBUTION
+var builder = WebApplication.CreateBuilder(new WebApplicationOptions
+{
+    Args = args,
+    ContentRootPath = AppContext.BaseDirectory
+});
+// Distributed binaries always use safe per-user storage and automatic migrations.
+builder.Configuration["TaskPilot:Packaged"] = "true";
+#else
 var builder = WebApplication.CreateBuilder(args);
+#endif
 
 builder.Services.AddControllers();
 builder.Services.AddHostedService<PackagedDatabaseInitializer>();

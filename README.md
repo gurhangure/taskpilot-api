@@ -184,29 +184,72 @@ TRX results are written to `artifacts/test-results/` and published API files to 
 
 ## Continuous integration and planned deployment
 
-The GitHub Actions workflow runs on pushes and pull requests targeting `main`, or manually through `workflow_dispatch`. It uses an Ubuntu runner with only `contents: read` permissions and installs the SDK specified by `global.json`. It restores, builds in Release, runs unit and integration tests, uploads available TRX results even when tests fail, and publishes and uploads the API only after successful tests.
+The GitHub Actions workflow runs on pushes and pull requests targeting `main`, or manually through `workflow_dispatch`. Its build/test job uses an Ubuntu runner with only `contents: read` permissions and installs the SDK specified by `global.json`. It restores, builds in Release, runs unit and integration tests, uploads available TRX results even when tests fail, and publishes and uploads the API only after successful tests. Dependent distribution jobs publish and execute the four self-contained packages on matching native runners.
 
 This is CI configuration, not evidence of a successful GitHub Actions run. Hosting and automated deployment are not configured yet. Continuous deployment (CD) will be implemented once the hosting target is selected.
 
-## Initial self-contained package foundation
+## Download and run a self-contained distribution
 
-Packaged mode is explicitly enabled with `--TaskPilot:Packaged=true` or `TaskPilot__Packaged=true`. It is not inferred from Release configuration, the Production environment, or the executable's location. Publishing alone does not enable it: use the launch command below. Leaving it disabled preserves the existing development connection string and manual migration workflow.
+No .NET SDK, runtime, Python, SQLite CLI, or database server is required on the recipient's computer. Source development still uses the SDK and manual migrations described below.
 
-For an initial macOS Apple Silicon folder distribution, run from the repository root on a machine with the SDK:
+Open [GitHub Actions CI](https://github.com/gurhangure/taskpilot-api/actions/workflows/ci.yml), select a successful run for the desired commit on main, and download the matching artifact from its **Artifacts** section (GitHub sign-in required). Artifacts expire after 30 days; rerun CI if needed. The older `taskpilot-api` artifact is framework-dependent and intended for developers; choose a platform-specific artifact below for standalone use.
 
-```sh
-dotnet publish src/TaskPilot.Api/TaskPilot.Api.csproj --configuration Release --runtime osx-arm64 --self-contained true --output artifacts/package/osx-arm64
+| Artifact | Archive inside artifact ZIP | Native verification runner |
+| --- | --- | --- |
+| taskpilot-api-win-x64 | taskpilot-api-win-x64.zip | windows-2025 (x64) |
+| taskpilot-api-osx-arm64 | taskpilot-api-osx-arm64.tar.gz | macos-15 (Apple Silicon) |
+| taskpilot-api-osx-x64 | taskpilot-api-osx-x64.tar.gz | macos-15-intel (Intel) |
+| taskpilot-api-linux-x64 | taskpilot-api-linux-x64.tar.gz | ubuntu-24.04 (x64) |
+
+Extract the downloaded artifact ZIP, then extract the archive inside it. Keep all extracted files together, including `appsettings.json`. Unix tar archives preserve executable permissions. These are console applications, not installers or desktop apps.
+
+Windows x64, from PowerShell in the extracted package directory:
+
+```powershell
+.\TaskPilot.Api.exe --urls http://127.0.0.1:5080
 ```
 
-Distribute the **entire output directory**, including native SQLite and runtime files. The recipient does not need a separately installed .NET runtime. This is a folder distribution, not a single-file, trimmed, or Native AOT build. [Microsoft's macOS publishing guidance](https://learn.microsoft.com/en-us/dotnet/core/deploying/macos)
+Run from a terminal so startup errors remain visible. The executable is unsigned; SmartScreen or organization policy may block it. Verify the repository and workflow provenance before allowing a trusted download, and follow your organization's policy. Do not disable security protections or run as administrator.
 
-From that output directory, launch:
+macOS Apple Silicon or Intel, using the matching package:
 
 ```sh
-./TaskPilot.Api --TaskPilot:Packaged=true --urls http://127.0.0.1:5080
+tar -xzf taskpilot-api-osx-arm64.tar.gz # Use osx-x64 on Intel.
+chmod u+x TaskPilot.Api
+./TaskPilot.Api --urls http://127.0.0.1:5080
 ```
 
-Without an explicit URL setting, Kestrel retains its loopback default `http://localhost:5000`. The example pins IPv4 loopback and port 5080. Existing `ASPNETCORE_URLS`, `--urls`, and Kestrel configuration remain available for explicit port/interface selection; no network-wide binding is added. Use the LAN security guidance below before deliberately selecting a private network address. Stop the executable with Ctrl+C. Use Production (the default) for packaged use; inherited environment and URL settings still apply. Running from the package directory also loads its appsettings files; the packaged database default itself does not depend on the working directory.
+Packages are not Developer ID signed or notarized. Gatekeeper may block downloaded executables. After verifying the source, use macOS System Settings > Privacy & Security to allow the specific application if offered; managed Macs may require administrator approval. Do not disable Gatekeeper globally. A permission error may require the chmod command above; an architecture error requires the other macOS package.
+
+Linux x64:
+
+```sh
+tar -xzf taskpilot-api-linux-x64.tar.gz
+chmod u+x TaskPilot.Api
+./TaskPilot.Api --urls http://127.0.0.1:5080
+```
+
+Linux needs a supported glibc-based OS and the [native OS dependencies for .NET](https://learn.microsoft.com/en-us/dotnet/core/install/linux). Self-contained publishing includes .NET, but not all system libraries. Alpine/musl, Linux ARM, and Windows ARM are not distribution targets. CI verifies Ubuntu 24.04, Windows Server 2025, and macOS 15; it does not establish compatibility with every desktop OS version.
+
+Check `http://127.0.0.1:5080/api/health` for `{"status":"ok"}`. There is no home-page UI. Stop with Ctrl+C. Without `--urls` or other URL configuration, the default is `http://localhost:5000`. Set `--urls` or `ASPNETCORE_URLS` to select another port or a specific trusted LAN address; see [network access](#optional-local-network-access) before connecting a phone. Configuration files are loaded beside the distributed executable even when launched from another directory; environment variables and command-line settings retain their normal precedence.
+
+The Distribution profile compiles packaged mode into the executable: no opt-in flag is needed, and `TaskPilot:Packaged=false` cannot disable it in these binaries. Normal builds and ordinary publishing retain the original opt-in behavior (`--TaskPilot:Packaged=true`) and source development remains unchanged.
+
+### Publishing and executable verification
+
+CI retains the existing solution build, unit tests, integration tests, and framework-dependent publish. After that job succeeds, four independent jobs publish with this command, replacing the RID as appropriate:
+
+```sh
+dotnet publish src/TaskPilot.Api/TaskPilot.Api.csproj --configuration Release --runtime osx-arm64 -p:PublishProfile=Distribution --output artifacts/package/osx-arm64
+```
+
+The profile uses self-contained **single-file** publishing on all four targets, with native runtime/SQLite libraries bundled for extraction. Configuration JSON stays external and editable. EF migrations remain compiled in the application assembly. Trimming and Native AOT are disabled to retain reflection-based EF migration discovery and MVC behavior. A writable native bundle extraction cache is required; `DOTNET_BUNDLE_EXTRACT_BASE_DIR` can select a private writable directory. See [Microsoft's single-file deployment guidance](https://learn.microsoft.com/en-us/dotnet/core/deploying/single-file/).
+
+Publishing is build verification only. In a separate runtime step, `scripts/verify-distribution.py` archives and extracts the package, launches the actual native executable from another working directory with an isolated temporary SQLite path configured in its JSON sidecar, checks health and CRUD/validation, inspects EF migration history, stops gracefully, restarts against the same database, and checks persistence. Unix uses SIGTERM; Windows uses CTRL_BREAK. Failure to publish, launch, migrate, answer requests, preserve data, or shut down cleanly fails the job and prevents that distribution upload. Runtime logs and a success summary are uploaded separately as `runtime-verification-RID`. No automated tests are run locally by agents.
+
+All four targets have native execution jobs; no target is intentionally build-only. A successful publish alone is not a runtime pass: inspect the runtime step and result artifact for the selected commit. No GitHub Releases, deployment, signing, notarization, or installers are created.
+
+### Packaged database storage
 
 On first run, a startup initializer creates the data directory and calls EF Core `MigrateAsync` using the committed migrations. It completes before the HTTP server accepts requests. Later starts apply only pending migrations and retain existing tasks. The initializer never calls `EnsureCreated`, deletes a database, or resets data. Directory, configuration, or migration failures log a clear initialization error and abort host startup; no health endpoint is served as if initialization succeeded. Startup cancellation propagates normally. Repair the path/permissions or investigate database compatibility rather than deleting data to bypass an error.
 
@@ -231,7 +274,7 @@ The equivalent environment variable is `TaskPilot__DatabasePath`. In packaged mo
 
 Use one API process per database during upgrades, stop it and back up the database before replacing a package, and review future migrations for data-loss risk. Automatic migrations do not provide backups, rollback, compatibility with older binaries, or coordination for a multi-instance deployment. Never replace an existing schema with `EnsureCreated` or reset a database after a migration failure.
 
-`PackagedDatabaseTests` checks path selection and configuration isolation without I/O. `PackagedStartupTests` uses temporary SQLite files to verify first-run migrations, data persistence after restart, unchanged normal startup, corrupt-file failure, and directory-creation failure. Existing CI discovers both suites without workflow changes. These host-based checks do not prove an actual self-contained binary runs: the publish example and packaged executable have not been executed as part of this step. Cross-platform release automation, signing/notarization, installers, GitHub Releases, and runtime verification on target machines remain future work.
+`PackagedDatabaseTests` checks path selection and configuration isolation without I/O. `PackagedStartupTests` uses temporary SQLite files to verify first-run migrations, data persistence after restart, unchanged normal startup, corrupt-file failure, and directory-creation failure. These host-based suites are supplemented by the native executable verification in each distribution job. Consult the selected CI run for actual execution results.
 
 ## Run locally
 
@@ -400,7 +443,7 @@ Native clients do not need browser CORS permissions. A future browser/WebView cl
 | HTTPS/certificate error | These examples use HTTP; switching the scheme alone does not configure HTTPS or device trust |
 | OpenAPI returns 404 | Set `DOTNET_ENVIRONMENT=Development` before startup; only JSON documentation is available |
 
-The API currently has no authentication, user isolation, pagination, mobile clients, or production hosting/CD. Automatic migration startup is available only in explicit packaged mode. Device connectivity, mobile permissions, and HTTPS trust still need validation during Android/iOS development. SQLite requires writable persistent storage for any eventual hosted deployment. This step verifies macOS loopback HTTP only and changes no API contracts, business logic, CI workflow, network binding defaults, or system security settings.
+The API currently has no authentication, user isolation, pagination, mobile clients, or production hosting/CD. Automatic migration startup is available only in explicit packaged mode. Device connectivity, mobile permissions, and HTTPS trust still need validation during Android/iOS development. SQLite requires writable persistent storage for any eventual hosted deployment. Distribution CI verifies native loopback HTTP on the four target platforms; physical Android/iOS connectivity remains unverified. API contracts and network binding defaults are unchanged. Unsigned packages, HTTP-only examples, and unauthenticated access remain limitations before mobile development.
 
 ## Local instructions and prompt history
 
