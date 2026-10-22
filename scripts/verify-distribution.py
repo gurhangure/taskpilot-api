@@ -1,6 +1,7 @@
 """Archive and verify a native distribution on its matching CI runner."""
 
 import json
+from contextlib import closing
 import os
 from pathlib import Path
 import platform
@@ -107,7 +108,7 @@ def main():
                                 raise RuntimeError(f"API readiness timed out; see {log_path}")
                             time.sleep(0.5)
                     assert database.is_file(), "Configured database was not created"
-                    with sqlite3.connect(database) as connection:
+                    with closing(sqlite3.connect(database)) as connection:
                         migrations = connection.execute(
                             'SELECT MigrationId FROM "__EFMigrationsHistory"').fetchall()
                         assert ("20261022102839_InitialCreate",) in migrations
