@@ -1,6 +1,6 @@
 # TaskPilot API
 
-TaskPilot is a task-management portfolio product with an ASP.NET Core Web API and planned native clients for Android (Kotlin/Jetpack Compose) and iOS (Swift/SwiftUI). This repository contains the backend scaffold, an EF Core SQLite persistence foundation, a task service layer, integration tests, and a continuous integration workflow.
+TaskPilot is a task-management portfolio product with an ASP.NET Core Web API and planned native clients for Android (Kotlin/Jetpack Compose) and iOS (Swift/SwiftUI). This repository contains the backend scaffold, an EF Core SQLite persistence foundation, a task service layer, unit and integration tests, and a continuous integration workflow.
 
 ## Prerequisites
 
@@ -36,12 +36,16 @@ taskpilot-api/
 │   ├── Controllers/TasksController.cs
 │   ├── Models/Tasks/             # Validated create and update requests
 │   └── Models/HealthResponse.cs
-└── tests/TaskPilot.Api.IntegrationTests/
-    ├── TaskPilot.Api.IntegrationTests.csproj
-    ├── ApiContractTests.cs
-    ├── PersistenceTests.cs
-    ├── TaskServiceTests.cs
-    └── TaskEndpointTests.cs
+└── tests/
+    ├── TaskPilot.Api.UnitTests/
+    │   ├── TaskPilot.Api.UnitTests.csproj
+    │   └── TaskContentValidatorTests.cs
+    └── TaskPilot.Api.IntegrationTests/
+        ├── TaskPilot.Api.IntegrationTests.csproj
+        ├── ApiContractTests.cs
+        ├── PersistenceTests.cs
+        ├── TaskServiceTests.cs
+        └── TaskEndpointTests.cs
 ```
 
 The architecture is **Controllers → Services → Data access**, using constructor injection. `TasksController` translates HTTP requests into calls to `ITaskService` and maps results to response status codes. It does not access the database directly. `Program.cs` registers controllers and maps their attribute routes with `MapControllers`. There are no repositories, authentication, or custom unit-of-work wrappers.
@@ -153,9 +157,16 @@ CI runs the following sequence from the repository root. Under the repository's 
 ```sh
 dotnet restore TaskPilot.slnx
 dotnet build TaskPilot.slnx --configuration Release --no-restore
+dotnet test tests/TaskPilot.Api.UnitTests/TaskPilot.Api.UnitTests.csproj --configuration Release --no-build --logger "trx;LogFileName=unit-tests.trx" --results-directory artifacts/test-results
 dotnet test tests/TaskPilot.Api.IntegrationTests/TaskPilot.Api.IntegrationTests.csproj --configuration Release --no-build --logger "trx;LogFileName=integration-tests.trx" --results-directory artifacts/test-results
 dotnet publish src/TaskPilot.Api/TaskPilot.Api.csproj --configuration Release --no-build --output artifacts/publish
 ```
+
+`TaskPilot.Api.UnitTests` uses the same xUnit, test SDK, and runner versions as the integration project. Its 19 cases directly exercise the internal, pure `TaskContentValidator` without an HTTP host, EF Core context, SQLite database, filesystem access, or mocks. Coverage includes null/empty/ASCII and Unicode whitespace titles, title lengths 1/199/200/201, surrounding whitespace, UTF-16 length semantics, optional descriptions, description lengths 1999/2000/2001, and title-error precedence when both fields are invalid.
+
+`TaskService` calls this validator before persistence in create and update. The extraction preserves exception types, messages, parameter names, validation order, and string-length behavior. The validator remains internal, with access granted only to the unit-test assembly through `InternalsVisibleTo`; no new public service contract or dependency is introduced. HTTP DTO validation attributes remain unchanged.
+
+Unit tests check content decisions in isolation. Integration tests retain responsibility for service persistence, migrations, cancellation, application wiring, and HTTP status/validation response contracts. Existing integration tests are unchanged; their overlap at boundary inputs verifies that the rules remain connected to persistence and HTTP behavior rather than replacing the unit tests.
 
 The three xUnit integration tests use `WebApplicationFactory` to run the actual application pipeline in memory, without an external server. They verify the health endpoint's HTTP 200, JSON content type, and status property; the Development OpenAPI document and its health operation; and HTTP 404 for OpenAPI in Production. Each test explicitly selects its environment and disposes its hosts and HTTP client. The public partial `Program` declaration provides test access to the top-level application entry point.
 
@@ -163,7 +174,9 @@ Historical verification: all three initial tests passed locally before the CI-fi
 
 The persistence integration test uses the actual SQLite provider and a uniquely named temporary database. It applies the committed migrations with `MigrateAsync`, saves a task, disposes the writing context, and verifies all fields and UTC timestamp kind through a fresh context. Pooling is disabled and only that test's temporary files are cleaned up after contexts are disposed. It never uses the developer database.
 
-`TaskServiceTests` applies the same migrations to a separate temporary SQLite database for every test case. Coverage includes creation defaults and unique IDs, listing and retrieval, updates preserving server fields, description clearing, deletion, missing tasks, invalid content, exact length boundaries, cancellation, and scoped application DI registration. Persistence assertions use fresh contexts. The DI test overrides the application connection string with its own isolated database. The existing CI command discovers all tests without workflow changes. Service tests are not run locally; their execution status must be checked in GitHub Actions for the relevant commit.
+`TaskServiceTests` applies the same migrations to a separate temporary SQLite database for every test case. Coverage includes creation defaults and unique IDs, listing and retrieval, updates preserving server fields, description clearing, deletion, missing tasks, invalid content, exact length boundaries, cancellation, and scoped application DI registration. Persistence assertions use fresh contexts. The DI test overrides the application connection string with its own isolated database. The integration-test CI command continues to discover this suite. Service tests are not run locally; their execution status must be checked in GitHub Actions for the relevant commit.
+
+CI runs the unit suite first and then the integration suite after the solution build. Both must pass before API publishing. Distinct `unit-tests.trx` and `integration-tests.trx` files are uploaded together as the `test-results` artifact, including available results when a step fails. A failed earlier step prevents later test/publish steps from running. No automated tests are run locally by agents without explicit authorization.
 
 TRX results are written to `artifacts/test-results/` and published API files to `artifacts/publish/`. These generated files are Git-ignored. Publishing creates application files; it does not deploy them.
 
@@ -171,7 +184,7 @@ TRX results are written to `artifacts/test-results/` and published API files to 
 
 ## Continuous integration and planned deployment
 
-The GitHub Actions workflow runs on pushes and pull requests targeting `main`, or manually through `workflow_dispatch`. It uses an Ubuntu runner with only `contents: read` permissions and installs the SDK specified by `global.json`. It restores, builds in Release, runs integration tests, uploads available TRX results even when tests fail, and publishes and uploads the API only after successful tests.
+The GitHub Actions workflow runs on pushes and pull requests targeting `main`, or manually through `workflow_dispatch`. It uses an Ubuntu runner with only `contents: read` permissions and installs the SDK specified by `global.json`. It restores, builds in Release, runs unit and integration tests, uploads available TRX results even when tests fail, and publishes and uploads the API only after successful tests.
 
 This is CI configuration, not evidence of a successful GitHub Actions run. Hosting and automated deployment are not configured yet. Continuous deployment (CD) will be implemented once the hosting target is selected.
 

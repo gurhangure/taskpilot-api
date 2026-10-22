@@ -28,6 +28,9 @@ jobs:
       - name: Build
         run: dotnet build TaskPilot.slnx --configuration Release --no-restore
 
+      - name: Run unit tests
+        run: dotnet test tests/TaskPilot.Api.UnitTests/TaskPilot.Api.UnitTests.csproj --configuration Release --no-build --logger "trx;LogFileName=unit-tests.trx" --results-directory artifacts/test-results
+
       - name: Run integration tests
         run: dotnet test tests/TaskPilot.Api.IntegrationTests/TaskPilot.Api.IntegrationTests.csproj --configuration Release --no-build --logger "trx;LogFileName=integration-tests.trx" --results-directory artifacts/test-results
 
@@ -35,7 +38,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7.0.2
         with:
-          name: integration-test-results
+          name: test-results
           path: artifacts/test-results/*.trx
           if-no-files-found: ignore
 

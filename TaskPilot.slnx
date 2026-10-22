@@ -3,6 +3,7 @@
     <Project Path="src/TaskPilot.Api/TaskPilot.Api.csproj" />
   </Folder>
   <Folder Name="/tests/">
+    <Project Path="tests/TaskPilot.Api.UnitTests/TaskPilot.Api.UnitTests.csproj" />
     <Project Path="tests/TaskPilot.Api.IntegrationTests/TaskPilot.Api.IntegrationTests.csproj" />
   </Folder>
 </Solution>

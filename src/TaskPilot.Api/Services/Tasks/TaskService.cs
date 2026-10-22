@@ -21,7 +21,7 @@ public sealed class TaskService : ITaskService
     {
         cancellationToken.ThrowIfCancellationRequested();
         ArgumentNullException.ThrowIfNull(input);
-        ValidateContent(input.Title, input.Description);
+        TaskContentValidator.Validate(input.Title, input.Description);
         var task = new TaskItem
         {
             Id = Guid.NewGuid(),
@@ -57,7 +57,7 @@ public sealed class TaskService : ITaskService
     {
         cancellationToken.ThrowIfCancellationRequested();
         ArgumentNullException.ThrowIfNull(input);
-        ValidateContent(input.Title, input.Description);
+        TaskContentValidator.Validate(input.Title, input.Description);
         var task = await _context.Tasks.SingleOrDefaultAsync(task => task.Id == id, cancellationToken);
         if (task is null)
         {
@@ -83,21 +83,6 @@ public sealed class TaskService : ITaskService
         _context.Tasks.Remove(task);
         await _context.SaveChangesAsync(cancellationToken);
         return true;
-    }
-
-    /// <summary>Rejects invalid content before it can alter persisted tasks.</summary>
-    /// <exception cref="ArgumentException">The title is blank or either field exceeds its storage limit.</exception>
-    private static void ValidateContent(string title, string? description)
-    {
-        if (string.IsNullOrWhiteSpace(title) || title.Length > 200)
-        {
-            throw new ArgumentException("A nonblank title of at most 200 characters is required.", nameof(title));
-        }
-
-        if (description?.Length > 2000)
-        {
-            throw new ArgumentException("The description must contain at most 2000 characters.", nameof(description));
-        }
     }
 
     /// <summary>Copies saved values into an immutable service result.</summary>
