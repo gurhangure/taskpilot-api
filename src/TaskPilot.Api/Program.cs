@@ -1,9 +1,11 @@
 using Microsoft.EntityFrameworkCore;
 using TaskPilot.Api.Data;
+using TaskPilot.Api.Services.Tasks;
 
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddControllers();
+builder.Services.AddScoped<ITaskService, TaskService>();
 builder.Services.AddDbContext<TaskPilotDbContext>(options =>
     options.UseSqlite(builder.Configuration.GetConnectionString("TaskPilot")
         ?? throw new InvalidOperationException("The TaskPilot connection string is required.")));

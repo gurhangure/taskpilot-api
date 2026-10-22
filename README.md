@@ -1,6 +1,6 @@
 # TaskPilot API
 
-TaskPilot is a task-management portfolio product with an ASP.NET Core Web API and planned native clients for Android (Kotlin/Jetpack Compose) and iOS (Swift/SwiftUI). This repository contains the backend scaffold, an EF Core SQLite persistence foundation, integration tests, and a continuous integration workflow.
+TaskPilot is a task-management portfolio product with an ASP.NET Core Web API and planned native clients for Android (Kotlin/Jetpack Compose) and iOS (Swift/SwiftUI). This repository contains the backend scaffold, an EF Core SQLite persistence foundation, a task service layer, integration tests, and a continuous integration workflow.
 
 ## Prerequisites
 
@@ -26,6 +26,7 @@ taskpilot-api/
 │   ├── Program.cs
 │   ├── appsettings.json
 │   ├── Entities/TaskItem.cs
+│   ├── Services/Tasks/            # Service interface, implementation, inputs, and result
 │   ├── Data/TaskPilotDbContext.cs
 │   ├── Data/Configurations/TaskItemConfiguration.cs
 │   ├── Data/Migrations/           # InitialCreate and model snapshot
@@ -34,16 +35,33 @@ taskpilot-api/
 └── tests/TaskPilot.Api.IntegrationTests/
     ├── TaskPilot.Api.IntegrationTests.csproj
     ├── ApiContractTests.cs
-    └── PersistenceTests.cs
+    ├── PersistenceTests.cs
+    └── TaskServiceTests.cs
 ```
 
-The intended architecture is **Controllers → Services → Data access**, using constructor injection. The health controller and response model are implemented, along with the task entity and EF Core data access foundation. Task services and endpoints are still planned; there are no task controllers, CRUD endpoints, repositories, authentication, or custom unit-of-work wrappers.
+The architecture is **Controllers → Services → Data access**, using constructor injection. The health controller and response model are implemented, along with the task entity, EF Core data access, and task service layer. Task HTTP endpoints are still planned; there are no task controllers, CRUD endpoints, repositories, authentication, or custom unit-of-work wrappers.
+
+## Task service
+
+`ITaskService` and `TaskService` live under `Services/Tasks`. The service is registered with a scoped lifetime matching `TaskPilotDbContext`, which it receives directly through constructor injection. It owns task creation defaults, content validation, and persistence. Future controllers will translate service results into HTTP responses; the service has no HTTP dependencies.
+
+| Operation | Input | Result |
+| --- | --- | --- |
+| `CreateAsync` | `CreateTaskInput` with title and optional description | Saved `TaskResult` |
+| `ListAsync` | None | All snapshots ordered by creation time, then ID; empty list when no tasks exist |
+| `GetByIdAsync` | Task ID | Snapshot, or `null` if missing |
+| `UpdateAsync` | Task ID and `UpdateTaskInput` | Saved snapshot, or `null` if missing |
+| `DeleteAsync` | Task ID | `true` if deleted, `false` if missing |
+
+All operations accept an optional `CancellationToken` and use EF Core asynchronous database APIs. Each successful mutation saves before returning. Results are immutable `TaskResult` snapshots; the public contract exposes neither tracked entities nor queryables. Missing tasks are normal absence results rather than exceptions or HTTP response types.
+
+Creation generates a new GUID, sets `CreatedAtUtc` with `DateTime.UtcNow`, and initializes `IsCompleted` to false. Updates replace title, description, and completion state while preserving identity and creation time; a null description clears it. Create and update reject null inputs, blank titles, titles longer than 200 characters, and descriptions longer than 2000 characters with `ArgumentException` (including `ArgumentNullException` for null input objects). Content is preserved without trimming. Update validates content before looking up the task. Cancellation and database failures propagate to the caller.
 
 ## Persistence and migrations
 
-`TaskItem` holds a server-assigned `Guid` ID, required title (200 characters), optional description (2000 characters), completion state (initially false), and UTC creation time. The future API will assign IDs and timestamps. Callers must supply `CreatedAtUtc` in UTC; the EF mapping restores `DateTimeKind.Utc` on reads because SQLite storage does not preserve that .NET metadata.
+`TaskItem` holds a server-assigned `Guid` ID, required title (200 characters), optional description (2000 characters), completion state (initially false), and UTC creation time. The task service assigns IDs and UTC timestamps. Code writing directly through the context must supply `CreatedAtUtc` in UTC; the EF mapping restores `DateTimeKind.Utc` on reads because SQLite storage does not preserve that .NET metadata.
 
-`TaskPilotDbContext` exposes `Tasks` and tracks database changes. `TaskItemConfiguration` defines the primary key, required fields, and intended text lengths. SQLite does **not** enforce string lengths merely because `HasMaxLength` is configured; request validation will enforce these limits when endpoints are added. [SQLite type limitations](https://learn.microsoft.com/en-us/dotnet/standard/data/sqlite/types)
+`TaskPilotDbContext` exposes `Tasks` and tracks database changes. `TaskItemConfiguration` defines the primary key, required fields, and intended text lengths. SQLite does **not** enforce string lengths merely because `HasMaxLength` is configured; the task service enforces these limits for service callers. [SQLite type limitations](https://learn.microsoft.com/en-us/dotnet/standard/data/sqlite/types)
 
 Dependency injection registers the context with the named `TaskPilot` connection string in `appsettings.json`: `Data Source=taskpilot.db`. SQLite resolves relative paths against the process working directory. With the documented `dotnet run --project src/TaskPilot.Api/TaskPilot.Api.csproj ...` command, that directory is `src/TaskPilot.Api`, so the file is `src/TaskPilot.Api/taskpilot.db`. Override the connection string through `ConnectionStrings__TaskPilot` when needed.
 
@@ -84,7 +102,9 @@ The three xUnit integration tests use `WebApplicationFactory` to run the actual 
 
 Historical verification: all three initial tests passed locally before the CI-first test execution policy was adopted. This does not establish the result of any later CI run.
 
-The fourth integration test uses the actual SQLite provider and a uniquely named temporary database. It applies the committed migrations with `MigrateAsync`, saves a task, disposes the writing context, and verifies all fields and UTC timestamp kind through a fresh context. Pooling is disabled and only that test's temporary files are cleaned up after contexts are disposed. It never uses the developer database. The existing CI command discovers this test in the same test project; no workflow changes are needed. Persistence behavior is pending CI verification; the new test has not been run locally.
+The persistence integration test uses the actual SQLite provider and a uniquely named temporary database. It applies the committed migrations with `MigrateAsync`, saves a task, disposes the writing context, and verifies all fields and UTC timestamp kind through a fresh context. Pooling is disabled and only that test's temporary files are cleaned up after contexts are disposed. It never uses the developer database.
+
+`TaskServiceTests` applies the same migrations to a separate temporary SQLite database for every test case. Coverage includes creation defaults and unique IDs, listing and retrieval, updates preserving server fields, description clearing, deletion, missing tasks, invalid content, exact length boundaries, cancellation, and scoped application DI registration. Persistence assertions use fresh contexts. The DI test overrides the application connection string with its own isolated database. The existing CI command discovers all tests without workflow changes. Service tests are not run locally; their execution status must be checked in GitHub Actions for the relevant commit.
 
 TRX results are written to `artifacts/test-results/` and published API files to `artifacts/publish/`. These generated files are Git-ignored. Publishing creates application files; it does not deploy them.
 
