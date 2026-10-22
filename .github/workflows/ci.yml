@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-test-publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7.0.1
+
+      - name: Install .NET SDK
+        uses: actions/setup-dotnet@v6.0.0
+        with:
+          global-json-file: global.json
+
+      - name: Restore
+        run: dotnet restore TaskPilot.slnx
+
+      - name: Build
+        run: dotnet build TaskPilot.slnx --configuration Release --no-restore
+
+      - name: Run integration tests
+        run: dotnet test tests/TaskPilot.Api.IntegrationTests/TaskPilot.Api.IntegrationTests.csproj --configuration Release --no-build --logger "trx;LogFileName=integration-tests.trx" --results-directory artifacts/test-results
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: integration-test-results
+          path: artifacts/test-results/*.trx
+          if-no-files-found: ignore
+
+      - name: Publish API
+        run: dotnet publish src/TaskPilot.Api/TaskPilot.Api.csproj --configuration Release --no-build --output artifacts/publish
+
+      - name: Upload API publish output
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: taskpilot-api
+          path: artifacts/publish/
+          if-no-files-found: error
