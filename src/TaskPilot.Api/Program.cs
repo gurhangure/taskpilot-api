@@ -5,10 +5,10 @@ using TaskPilot.Api.Services.Tasks;
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddControllers();
+builder.Services.AddHostedService<PackagedDatabaseInitializer>();
 builder.Services.AddScoped<ITaskService, TaskService>();
 builder.Services.AddDbContext<TaskPilotDbContext>(options =>
-    options.UseSqlite(builder.Configuration.GetConnectionString("TaskPilot")
-        ?? throw new InvalidOperationException("The TaskPilot connection string is required.")));
+    options.UseSqlite(PackagedDatabase.GetConnectionString(builder.Configuration)));
 
 if (builder.Environment.IsDevelopment())
 {
