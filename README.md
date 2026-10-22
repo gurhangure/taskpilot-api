@@ -31,19 +31,22 @@ taskpilot-api/
 │   ├── Data/Configurations/TaskItemConfiguration.cs
 │   ├── Data/Migrations/           # InitialCreate and model snapshot
 │   ├── Controllers/HealthController.cs
+│   ├── Controllers/TasksController.cs
+│   ├── Models/Tasks/             # Validated create and update requests
 │   └── Models/HealthResponse.cs
 └── tests/TaskPilot.Api.IntegrationTests/
     ├── TaskPilot.Api.IntegrationTests.csproj
     ├── ApiContractTests.cs
     ├── PersistenceTests.cs
-    └── TaskServiceTests.cs
+    ├── TaskServiceTests.cs
+    └── TaskEndpointTests.cs
 ```
 
-The architecture is **Controllers → Services → Data access**, using constructor injection. The health controller and response model are implemented, along with the task entity, EF Core data access, and task service layer. Task HTTP endpoints are still planned; there are no task controllers, CRUD endpoints, repositories, authentication, or custom unit-of-work wrappers.
+The architecture is **Controllers → Services → Data access**, using constructor injection. `TasksController` translates HTTP requests into calls to `ITaskService` and maps results to response status codes. It does not access the database directly. `Program.cs` registers controllers and maps their attribute routes with `MapControllers`. There are no repositories, authentication, or custom unit-of-work wrappers.
 
 ## Task service
 
-`ITaskService` and `TaskService` live under `Services/Tasks`. The service is registered with a scoped lifetime matching `TaskPilotDbContext`, which it receives directly through constructor injection. It owns task creation defaults, content validation, and persistence. Future controllers will translate service results into HTTP responses; the service has no HTTP dependencies.
+`ITaskService` and `TaskService` live under `Services/Tasks`. The service is registered with a scoped lifetime matching `TaskPilotDbContext`, which it receives directly through constructor injection. It owns task creation defaults, content validation, and persistence. The controller translates service results into HTTP responses; the service has no HTTP dependencies.
 
 | Operation | Input | Result |
 | --- | --- | --- |
@@ -56,6 +59,64 @@ The architecture is **Controllers → Services → Data access**, using construc
 All operations accept an optional `CancellationToken` and use EF Core asynchronous database APIs. Each successful mutation saves before returning. Results are immutable `TaskResult` snapshots; the public contract exposes neither tracked entities nor queryables. Missing tasks are normal absence results rather than exceptions or HTTP response types.
 
 Creation generates a new GUID, sets `CreatedAtUtc` with `DateTime.UtcNow`, and initializes `IsCompleted` to false. Updates replace title, description, and completion state while preserving identity and creation time; a null description clears it. Create and update reject null inputs, blank titles, titles longer than 200 characters, and descriptions longer than 2000 characters with `ArgumentException` (including `ArgumentNullException` for null input objects). Content is preserved without trimming. Update validates content before looking up the task. Cancellation and database failures propagate to the caller.
+
+## Task REST API
+
+All routes use JSON and return the existing `TaskResult` contract. Request cancellation is forwarded to every service operation.
+
+| Method and path | Success | Missing task |
+| --- | --- | --- |
+| `POST /api/tasks` | 201 with task JSON and a `Location` retrieval URL | Not applicable |
+| `GET /api/tasks` | 200 with an array (empty when no tasks exist) | Not applicable |
+| `GET /api/tasks/{id}` | 200 with task JSON | 404 |
+| `PUT /api/tasks/{id}` | 200 with updated task JSON | 404 |
+| `DELETE /api/tasks/{id}` | 204 with no body | 404 |
+
+Create and update require a nonblank `title` of at most 200 characters. `description` is optional and limited to 2000 characters. PUT replaces editable fields: a null or omitted description clears it, and omitted `isCompleted` defaults to false. IDs and creation timestamps are server-owned; POST always creates an incomplete task. Unknown JSON fields are ignored. Invalid GUIDs, malformed JSON, missing request bodies, and invalid field values return 400 with the standard `ValidationProblemDetails` JSON format (`application/problem+json`). Unsupported media types return the framework's 415 response.
+
+After applying the migrations and starting the API as described below:
+
+```sh
+curl -i -X POST http://localhost:5080/api/tasks \
+  -H 'Content-Type: application/json' \
+  -d '{"title":"Write API tests","description":"Cover CRUD behavior"}'
+```
+
+Example response (201 Created, with `Location: http://localhost:5080/api/tasks/6fd063b7-808c-4e66-9faf-dfe653ab608c`; generated values vary):
+
+```json
+{
+  "id": "6fd063b7-808c-4e66-9faf-dfe653ab608c",
+  "title": "Write API tests",
+  "description": "Cover CRUD behavior",
+  "isCompleted": false,
+  "createdAtUtc": "2026-10-22T12:00:00Z"
+}
+```
+
+Use the returned ID for subsequent requests:
+
+```sh
+task_id='6fd063b7-808c-4e66-9faf-dfe653ab608c'
+curl -i http://localhost:5080/api/tasks
+curl -i "http://localhost:5080/api/tasks/$task_id"
+curl -i -X PUT "http://localhost:5080/api/tasks/$task_id" \
+  -H 'Content-Type: application/json' \
+  -d '{"title":"Write API tests","description":null,"isCompleted":true}'
+curl -i -X DELETE "http://localhost:5080/api/tasks/$task_id"
+```
+
+GET by ID and PUT return the same object shape as POST. PUT above returns `description: null` and `isCompleted: true` while preserving `id` and `createdAtUtc`. GET collection wraps task objects in an array. DELETE returns 204 without a body; retrieving or deleting that ID again returns 404.
+
+For example, POST with `{"title":""}` returns 400 with this validation-problem shape (additional fields and messages may vary):
+
+```json
+{
+  "title": "One or more validation errors occurred.",
+  "status": 400,
+  "errors": { "Title": ["The Title field is required."] }
+}
+```
 
 ## Persistence and migrations
 
@@ -107,6 +168,8 @@ The persistence integration test uses the actual SQLite provider and a uniquely 
 `TaskServiceTests` applies the same migrations to a separate temporary SQLite database for every test case. Coverage includes creation defaults and unique IDs, listing and retrieval, updates preserving server fields, description clearing, deletion, missing tasks, invalid content, exact length boundaries, cancellation, and scoped application DI registration. Persistence assertions use fresh contexts. The DI test overrides the application connection string with its own isolated database. The existing CI command discovers all tests without workflow changes. Service tests are not run locally; their execution status must be checked in GitHub Actions for the relevant commit.
 
 TRX results are written to `artifacts/test-results/` and published API files to `artifacts/publish/`. These generated files are Git-ignored. Publishing creates application files; it does not deploy them.
+
+`TaskEndpointTests` hosts the real HTTP pipeline with a separate migrated SQLite database per test case. It verifies CRUD responses and persistence across requests, creation Location URLs, server-owned fields, validation-problem responses, missing tasks, exact text limits, update defaults, and OpenAPI task operations. Hosts and contexts are disposed before temporary database cleanup. These tests never access the developer database and are executed through the same CI command, not locally by agents.
 
 ## Continuous integration and planned deployment
 
