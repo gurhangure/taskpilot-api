@@ -5,10 +5,8 @@ using System.Text.Json;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Data.Sqlite;
-using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Hosting;
-using TaskPilot.Api.Data;
 using TaskPilot.Api.Services.Tasks;
 using Xunit;
 
@@ -23,20 +21,14 @@ public sealed class TaskEndpointTests : IAsyncLifetime
     private HttpClient _client = null!;
     private string DatabasePath => Path.Combine(_directory.FullName, "tasks.db");
 
-    /// <summary>Migrates a private database and starts an application configured to use only that database.</summary>
-    public async Task InitializeAsync()
+    /// <summary>Starts the application and lets startup migrate only this test's private database.</summary>
+    public Task InitializeAsync()
     {
         var connectionString = new SqliteConnectionStringBuilder
         {
             DataSource = DatabasePath,
             Pooling = false
         }.ToString();
-        await using (var context = new TaskPilotDbContext(new DbContextOptionsBuilder<TaskPilotDbContext>()
-            .UseSqlite(connectionString).Options))
-        {
-            await context.Database.MigrateAsync();
-        }
-
         _factory = new WebApplicationFactory<Program>();
         _host = _factory.WithWebHostBuilder(builder =>
         {
@@ -45,6 +37,7 @@ public sealed class TaskEndpointTests : IAsyncLifetime
                 new Dictionary<string, string?> { ["ConnectionStrings:TaskPilot"] = connectionString }));
         });
         _client = _host.CreateClient();
+        return Task.CompletedTask;
     }
 
     /// <summary>Disposes the host before removing only this test's SQLite files.</summary>

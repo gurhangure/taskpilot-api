@@ -80,7 +80,7 @@ All routes use JSON and return the existing `TaskResult` contract. Request cance
 
 Create and update require a nonblank `title` of at most 200 characters. `description` is optional and limited to 2000 characters. PUT replaces editable fields: a null or omitted description clears it, and omitted `isCompleted` defaults to false. IDs and creation timestamps are server-owned; POST always creates an incomplete task. Unknown JSON fields are ignored. Invalid GUIDs, malformed JSON, missing request bodies, and invalid field values return 400 with the standard `ValidationProblemDetails` JSON format (`application/problem+json`). Unsupported media types return the framework's 415 response.
 
-After applying the migrations and starting the API as described below:
+After starting the API as described below (startup applies migrations automatically):
 
 ```sh
 curl -i -X POST http://localhost:5080/api/tasks \
@@ -132,9 +132,9 @@ For example, POST with `{"title":""}` returns 400 with this validation-problem s
 
 Dependency injection registers the context with the named `TaskPilot` connection string in `appsettings.json`: `Data Source=taskpilot.db`. SQLite resolves relative paths against the process working directory. With the documented `dotnet run --project src/TaskPilot.Api/TaskPilot.Api.csproj ...` command, that directory is `src/TaskPilot.Api`, so the file is `src/TaskPilot.Api/taskpilot.db`. Override the connection string through `ConnectionStrings__TaskPilot` when needed.
 
-The EF CLI-generated `InitialCreate` migration creates the `Tasks` table with all five fields, its primary key, and nullable description. The model snapshot records the schema for future migration comparisons. Normal development startup does not apply migrations or create/recreate a database. Explicit packaged mode applies migrations before serving requests, as described below.
+The EF CLI-generated `InitialCreate` migration creates the `Tasks` table with all five fields, its primary key, and nullable description. The model snapshot records the schema for future migration comparisons. Both source runs and packaged execution apply pending migrations automatically before accepting HTTP requests. The existing hosted initializer resolves the same scoped `TaskPilotDbContext` used by the API, so migrations use its exact configured connection string. A missing database is created; existing databases are never deleted, recreated, or reset. EF migration history prevents completed migrations from being reapplied on repeated startup. Configuration, directory, or migration failures abort startup with a clear initialization error; cancellation propagates normally.
 
-From the repository root, restore the pinned local tool:
+The EF CLI is needed only to author migrations, not to run the API. For migration authoring, restore the pinned local tool from the repository root:
 
 ```sh
 dotnet tool restore
@@ -146,9 +146,9 @@ The initial migration was generated with this command (it is already committed; 
 dotnet ef migrations add InitialCreate --project src/TaskPilot.Api/TaskPilot.Api.csproj --startup-project src/TaskPilot.Api/TaskPilot.Api.csproj --output-dir Data/Migrations
 ```
 
-For future model changes, use a new descriptive migration name in that command. Review generated migrations before applying them. Follow the cross-platform [local setup](#run-locally) below to apply the committed migration with the same explicit absolute database path used by the running API. Do not regenerate the initial migration.
+For future model changes, use a new descriptive migration name in that command. Review generated migrations before applying them. Follow the cross-platform [local setup](#run-locally) below to start the API against an explicit absolute database path; startup applies committed migrations without an EF CLI update command. Do not regenerate the initial migration.
 
-The database update command applies migrations without deleting or resetting an existing database. Local database files and journal/WAL/SHM companions are ignored by Git; migration source files are versioned. Production SQLite requires persistent storage for its database files. Hosting and automated deployment are not configured.
+Startup applies pending migrations without deleting or resetting an existing database. Local database files and journal/WAL/SHM companions are ignored by Git; migration source files are versioned. Production SQLite requires persistent storage for its database files. Hosting and automated deployment are not configured.
 
 ## Build, test, and publish
 
@@ -166,9 +166,9 @@ dotnet publish src/TaskPilot.Api/TaskPilot.Api.csproj --configuration Release --
 
 `TaskService` calls this validator before persistence in create and update. The extraction preserves exception types, messages, parameter names, validation order, and string-length behavior. The validator remains internal, with access granted only to the unit-test assembly through `InternalsVisibleTo`; no new public service contract or dependency is introduced. HTTP DTO validation attributes remain unchanged.
 
-Unit tests check content decisions in isolation. Integration tests retain responsibility for service persistence, migrations, cancellation, application wiring, and HTTP status/validation response contracts. Existing integration tests are unchanged; their overlap at boundary inputs verifies that the rules remain connected to persistence and HTTP behavior rather than replacing the unit tests.
+Unit tests check content decisions in isolation. Integration tests retain responsibility for service persistence, migrations, cancellation, application wiring, and HTTP status/validation response contracts. Integration tests overlap at boundary inputs, which verifies that the rules remain connected to persistence and HTTP behavior rather than replacing the unit tests.
 
-The three xUnit integration tests use `WebApplicationFactory` to run the actual application pipeline in memory, without an external server. They verify the health endpoint's HTTP 200, JSON content type, and status property; the Development OpenAPI document and its health operation; and HTTP 404 for OpenAPI in Production. Each test explicitly selects its environment and disposes its hosts and HTTP client. The public partial `Program` declaration provides test access to the top-level application entry point.
+The three xUnit integration tests use `WebApplicationFactory` to run the actual application pipeline in memory, without an external server. They verify the health endpoint's HTTP 200, JSON content type, and status property; the Development OpenAPI document and its health operation; and HTTP 404 for OpenAPI in Production. Each test explicitly selects its environment, uses a private temporary SQLite database initialized by startup, and disposes its hosts and HTTP client before database cleanup. The public partial `Program` declaration provides test access to the top-level application entry point.
 
 Historical verification: all three initial tests passed locally before the CI-first test execution policy was adopted. This does not establish the result of any later CI run.
 
@@ -233,7 +233,7 @@ Linux needs a supported glibc-based OS and the [native OS dependencies for .NET]
 
 Check `http://127.0.0.1:5080/api/health` for `{"status":"ok"}`. There is no home-page UI. Stop with Ctrl+C. Without `--urls` or other URL configuration, the default is `http://localhost:5000`. Set `--urls` or `ASPNETCORE_URLS` to select another port or a specific trusted LAN address; see [network access](#optional-local-network-access) before connecting a phone. Configuration files are loaded beside the distributed executable even when launched from another directory; environment variables and command-line settings retain their normal precedence.
 
-The Distribution profile compiles packaged mode into the executable: no opt-in flag is needed, and `TaskPilot:Packaged=false` cannot disable it in these binaries. Normal builds and ordinary publishing retain the original opt-in behavior (`--TaskPilot:Packaged=true`) and source development remains unchanged.
+The Distribution profile compiles packaged mode into the executable: no opt-in flag is needed, and `TaskPilot:Packaged=false` cannot disable it in these binaries. Normal builds and ordinary publishing retain the original opt-in behavior (`--TaskPilot:Packaged=true`) and source runs now migrate automatically while preserving their existing connection-string and location behavior.
 
 ### Publishing and executable verification
 
@@ -274,7 +274,7 @@ The equivalent environment variable is `TaskPilot__DatabasePath`. In packaged mo
 
 Use one API process per database during upgrades, stop it and back up the database before replacing a package, and review future migrations for data-loss risk. Automatic migrations do not provide backups, rollback, compatibility with older binaries, or coordination for a multi-instance deployment. Never replace an existing schema with `EnsureCreated` or reset a database after a migration failure.
 
-`PackagedDatabaseTests` checks path selection and configuration isolation without I/O. `PackagedStartupTests` uses temporary SQLite files to verify first-run migrations, data persistence after restart, unchanged normal startup, corrupt-file failure, and directory-creation failure. These host-based suites are supplemented by the native executable verification in each distribution job. Consult the selected CI run for actual execution results.
+`PackagedDatabaseTests` checks path selection and configuration isolation without I/O. `PackagedStartupTests` uses temporary SQLite files to verify first-run migrations in both modes, data persistence and migration history after restart, initialization of an existing empty source database, configuration precedence, corrupt-file failure, and unusable-directory failure. These host-based suites are supplemented by the native executable verification in each distribution job. Consult the selected CI run for actual execution results.
 
 ## Run locally
 
@@ -283,12 +283,11 @@ The following setup is for a human developer. Agents still follow the CI-first t
 Restore dependencies and compile the API from the repository root:
 
 ```sh
-dotnet tool restore
 dotnet restore TaskPilot.slnx
 dotnet build src/TaskPilot.Api/TaskPilot.Api.csproj --configuration Release --no-restore
 ```
 
-Select a database and URL in the **same terminal** used to migrate and start the application. These paths are derived from your checkout, not hardcoded to a machine. The directory must exist and be writable. The environment variable overrides the relative connection string in `appsettings.json` for both EF tooling and the API.
+Select a database and URL in the **same terminal** used to start the application. These paths are derived from your checkout, not hardcoded to a machine. The directory must exist and be writable. The environment variable overrides the relative connection string in `appsettings.json` for the API and its startup migrations. Source mode preserves all connection-string options and requires the parent directory to exist; packaged mode continues to create its selected data directory.
 
 macOS/Linux (bash or zsh):
 
@@ -307,7 +306,7 @@ $env:DOTNET_ENVIRONMENT = 'Development'
 $env:ASPNETCORE_URLS = 'http://127.0.0.1:5080'
 ```
 
-For a disposable smoke test, **replace the database setting above before migrating**. This avoids using or resetting the developer database:
+For a disposable smoke test, **replace the database setting above before startup**. This avoids using or resetting the developer database:
 
 ```sh
 # macOS/Linux
@@ -323,10 +322,9 @@ New-Item -ItemType Directory -Path $smokeDirectory -Force | Out-Null
 $env:ConnectionStrings__TaskPilot = "Data Source=$(Join-Path $smokeDirectory 'tasks.db')"
 ```
 
-Then run these commands in either shell. Stop if migration fails; normal development startup does not apply migrations automatically.
+Then start the API in either shell. No EF CLI command is required; initialization must succeed before the API starts listening.
 
 ```sh
-dotnet ef database update --project src/TaskPilot.Api/TaskPilot.Api.csproj --startup-project src/TaskPilot.Api/TaskPilot.Api.csproj --configuration Release --no-build
 dotnet run --project src/TaskPilot.Api/TaskPilot.Api.csproj --configuration Release --no-build --no-launch-profile
 ```
 
@@ -434,7 +432,7 @@ Native clients do not need browser CORS permissions. A future browser/WebView cl
 | SDK not found | Install the SDK architecture and feature band in `global.json`; reopen the terminal and inspect `dotnet --info` |
 | `dotnet ef` not found | Run `dotnet tool restore` from the repository root; check NuGet connectivity |
 | `--no-build` fails or old behavior runs | Build the API in Release after source changes; the command does not compile automatically |
-| SQLite `no such table: Tasks` | Apply migrations using the same `ConnectionStrings__TaskPilot` value as the API; relative paths can silently select a different database |
+| Database initialization fails / SQLite schema error | Check the startup error, selected source connection string or packaged path, parent-directory write access, and migration compatibility; startup migrates automatically and never resets a database |
 | SQLite cannot open file / database locked | Check parent-directory permissions and other processes using that exact file; do not delete or reset a developer database |
 | Address already in use | Choose another port; do not terminate processes you did not start |
 | Connection refused or timeout | Check startup logs, scheme/port, host binding, firewall scope, VPN, Wi-Fi isolation, and whether the host is awake |
@@ -443,7 +441,7 @@ Native clients do not need browser CORS permissions. A future browser/WebView cl
 | HTTPS/certificate error | These examples use HTTP; switching the scheme alone does not configure HTTPS or device trust |
 | OpenAPI returns 404 | Set `DOTNET_ENVIRONMENT=Development` before startup; only JSON documentation is available |
 
-The API currently has no authentication, user isolation, pagination, mobile clients, or production hosting/CD. Automatic migration startup is available only in explicit packaged mode. Device connectivity, mobile permissions, and HTTPS trust still need validation during Android/iOS development. SQLite requires writable persistent storage for any eventual hosted deployment. Distribution CI verifies native loopback HTTP on the four target platforms; physical Android/iOS connectivity remains unverified. API contracts and network binding defaults are unchanged. Unsigned packages, HTTP-only examples, and unauthenticated access remain limitations before mobile development.
+The API currently has no authentication, user isolation, pagination, mobile clients, or production hosting/CD. Automatic migration startup is available in source and packaged modes; production upgrades still require backups, reviewed migrations, writable persistent storage, and one API process per database during migration. Device connectivity, mobile permissions, and HTTPS trust still need validation during Android/iOS development. SQLite requires writable persistent storage for any eventual hosted deployment. Distribution CI verifies native loopback HTTP on the four target platforms; physical Android/iOS connectivity remains unverified. API contracts and network binding defaults are unchanged. Unsigned packages, HTTP-only examples, and unauthenticated access remain limitations before mobile development.
 
 ## Local instructions and prompt history
 

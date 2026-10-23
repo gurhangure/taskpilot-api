@@ -2,7 +2,7 @@ using Microsoft.EntityFrameworkCore;
 
 namespace TaskPilot.Api.Data;
 
-/// <summary>Applies packaged database migrations during host startup before HTTP requests are accepted.</summary>
+/// <summary>Applies database migrations in both execution modes before HTTP requests are accepted.</summary>
 internal sealed class PackagedDatabaseInitializer : IHostedService
 {
     private readonly IConfiguration _configuration;
@@ -18,7 +18,7 @@ internal sealed class PackagedDatabaseInitializer : IHostedService
         _logger = logger;
     }
 
-    /// <summary>Creates the packaged data directory and applies pending migrations, or does nothing in normal mode.</summary>
+    /// <summary>Creates packaged storage when needed and migrates the scoped database used by API requests.</summary>
     /// <param name="cancellationToken">Cancels initialization when host startup is cancelled.</param>
     /// <returns>A task completing only after initialization succeeds.</returns>
     /// <exception cref="InvalidOperationException">Database initialization failed and the host must not start.</exception>
@@ -26,17 +26,16 @@ internal sealed class PackagedDatabaseInitializer : IHostedService
     {
         try
         {
-            if (!PackagedDatabase.IsEnabled(_configuration))
+            if (PackagedDatabase.IsEnabled(_configuration))
             {
-                return;
+                var path = PackagedDatabase.GetPath(_configuration);
+                Directory.CreateDirectory(Path.GetDirectoryName(path)!);
             }
 
-            var path = PackagedDatabase.GetPath(_configuration);
-            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
             await using var scope = _scopeFactory.CreateAsyncScope();
             var context = scope.ServiceProvider.GetRequiredService<TaskPilotDbContext>();
             await context.Database.MigrateAsync(cancellationToken);
-            _logger.LogInformation("Packaged database migrations completed successfully.");
+            _logger.LogInformation("TaskPilot database migrations completed successfully.");
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -44,7 +43,7 @@ internal sealed class PackagedDatabaseInitializer : IHostedService
         }
         catch (Exception exception)
         {
-            const string message = "TaskPilot database initialization failed. Check TaskPilot:DatabasePath, directory write permissions, available disk space, and SQLite migration compatibility. The API will not start; the database has not been reset.";
+            const string message = "TaskPilot database initialization failed. Check ConnectionStrings:TaskPilot (source mode) or TaskPilot:DatabasePath (packaged mode), directory write permissions, available disk space, and SQLite migration compatibility. The API will not start; the database has not been reset.";
             _logger.LogCritical("{Message} Failure type: {FailureType}", message, exception.GetType().Name);
             throw new InvalidOperationException(message, exception);
         }
